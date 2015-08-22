@@ -1,0 +1,130 @@
+diff -uNr linux.vanilla/drivers/misc/lkm.c linux.new/drivers/misc/lkm.c
+--- linux.vanilla/drivers/misc/lkm.c	1969-12-31 21:00:00.000000000 -0300
++++ linux.new/drivers/misc/lkm.c	2013-05-11 12:01:59.475682000 -0300
+@@ -0,0 +1,88 @@
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <asm/siginfo.h>	//siginfo
++#include <linux/debugfs.h>
++#include <linux/sched.h>
++#include <linux/uaccess.h>
++#include <linux/signal.h>
++#include <linux/lkm.h>
++
++#define SIG_NEW		35	// Signal that describe new process being created
++#define MAX_PROC_LIST	100	// Size of circular array
++
++struct dentry *file;
++int pid;
++struct task_struct *daemon;
++
++struct task_struct *get_task_struct_by_pid(unsigned pid) {
++    struct pid *proc_pid = find_vpid(pid);
++    struct task_struct *task;
++    if(!proc_pid)
++        return 0;
++    task = pid_task(proc_pid, PIDTYPE_PID);
++    return task;
++}
++
++
++static ssize_t write_pid(struct file *file, const char __user *buf,
++			 size_t count, loff_t *ppos)
++{
++	char pid_buffer[10];
++	
++	pid = 0;	
++	if(count > 10)
++		return -EINVAL;
++	copy_from_user(pid_buffer, buf, count);
++	sscanf(pid_buffer, "%d", &pid);
++	if(pid == -1) {
++		printk(KERN_INFO "process-monitor killed\n");
++		daemon = NULL;
++	}
++	else {
++		printk(KERN_INFO "process-monitor has pid %d\n", pid);
++		daemon = get_task_struct_by_pid(pid);
++	}
++	return count;
++}
++
++static const struct file_operations file_ops = {
++	.write = write_pid,
++};
++
++void notify_monitor(int new_pid) {
++	if(daemon != NULL) {
++		struct siginfo info;
++		int ret;
++
++		memset(&info, 0, sizeof(struct siginfo));
++		info.si_signo = SIG_NEW;
++		info.si_code = SI_QUEUE;
++		info.si_int = new_pid;  	
++
++		ret = send_sig_info(SIG_NEW, &info, daemon);
++		if(ret < 0)
++			printk(KERN_INFO "Error sending signal\n");
++	}	
++}
++
++static int __init monitor_module_init(void)
++{
++	daemon = NULL;
++	// Create file to be written by monitoring daemon
++	file = debugfs_create_file("process-monitor", 0200, NULL, NULL, &file_ops);
++	printk(KERN_INFO "Monitor module loaded\n");
++    	return 0;
++}
++
++void __exit monitor_module_exit(void)
++{
++	debugfs_remove(file);
++    	printk(KERN_INFO "Monitor module unloaded\n");
++}
++
++module_init(monitor_module_init);
++module_exit(monitor_module_exit);
++EXPORT_SYMBOL(notify_monitor);
++
++MODULE_LICENSE("GPL");
+diff -uNr linux.vanilla/drivers/misc/Makefile linux.new/drivers/misc/Makefile
+--- linux.vanilla/drivers/misc/Makefile	2013-04-28 21:36:01.000000000 -0300
++++ linux.new/drivers/misc/Makefile	2013-05-11 12:30:59.175758055 -0300
+@@ -52,3 +52,4 @@
+ obj-$(CONFIG_MAX8997_MUIC)	+= max8997-muic.o
+ obj-$(CONFIG_VMWARE_VMCI)	+= vmw_vmci/
+ obj-$(CONFIG_LATTICE_ECP3_CONFIG)	+= lattice-ecp3-config.o
++obj-y				+= lkm.o
+\ No newline at end of file
+diff -uNr linux.vanilla/include/linux/lkm.h linux.new/include/linux/lkm.h
+--- linux.vanilla/include/linux/lkm.h	1969-12-31 21:00:00.000000000 -0300
++++ linux.new/include/linux/lkm.h	2013-05-11 12:01:59.475682000 -0300
+@@ -0,0 +1,6 @@
++#ifndef _LINUX_MONITOR_
++#define _LINUX_MONITOR_
++
++void notify_monitor(int new_pid);
++
++#endif
+diff -uNr linux.vanilla/kernel/fork.c linux.new/kernel/fork.c
+--- linux.vanilla/kernel/fork.c	2013-04-28 21:36:01.000000000 -0300
++++ linux.new/kernel/fork.c	2013-05-11 12:42:02.609099638 -0300
+@@ -44,6 +44,7 @@
+ #include <linux/task_io_accounting_ops.h>
+ #include <linux/rcupdate.h>
+ #include <linux/ptrace.h>
++#include <linux/lkm.h>
+ #include <linux/mount.h>
+ #include <linux/audit.h>
+ #include <linux/memcontrol.h>
+@@ -1614,6 +1615,7 @@
+ 			get_task_struct(p);
+ 		}
+ 
++		notify_monitor(p->pid);
+ 		wake_up_new_task(p);
+ 
+ 		/* forking complete and child started to run, tell ptracer */
